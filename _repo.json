@@ -1,0 +1,7 @@
+{
+  "name": "pca-forge",
+  "description": "主成分分析锻造炉：纯 JS 手写中心化 + 协方差 + 雅可比特征分解，幂迭代主成分与解析特征分解交叉验证，旋转等变重建。单文件零依赖。",
+  "visibility": "public",
+  "auto_init": false,
+  "license_template": "mit"
+}

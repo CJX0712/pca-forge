@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PCAForge · 主成分分析锻造炉</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --ink:#e6edf3; --dim:#8b949e;
+    --acc:#58a6ff; --acc2:#3fb950; --warn:#d29922; --red:#f85149; --line:#30363d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px}
+  header{padding:16px 20px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#11161f,#0d1117)}
+  header h1{margin:0;font-size:18px;letter-spacing:.5px}
+  header .sub{color:var(--dim);font-size:12px;margin-top:4px}
+  .wrap{display:flex;flex-wrap:wrap;gap:14px;padding:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .col{flex:1 1 360px;min-width:320px}
+  h2{font-size:14px;margin:0 0 10px;color:var(--acc)}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:7px 0}
+  label{color:var(--dim);font-size:12px;min-width:64px}
+  select,input[type=range]{accent-color:var(--acc)}
+  select{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+  canvas{background:#0a0e14;border:1px solid var(--line);border-radius:8px;display:block;width:100%}
+  button{background:var(--acc);color:#06121f;border:none;border-radius:6px;padding:7px 14px;font-weight:600;cursor:pointer}
+  button.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
+  .stat{color:var(--dim);font-size:12px;margin:3px 0}
+  .kv{color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .bars{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+  .bar{display:flex;align-items:center;gap:8px;font-size:12px}
+  .bar .track{flex:1;height:14px;background:var(--panel2);border-radius:4px;overflow:hidden}
+  .bar .fill{height:100%;background:linear-gradient(90deg,#1f6feb,#3fb950)}
+  .test{font-size:12px;padding:4px 8px;border-radius:5px;margin:3px 0;border:1px solid var(--line);background:var(--panel2);display:flex;justify-content:space-between;gap:10px}
+  .test .ok{color:var(--acc2)} .test .no{color:var(--red)}
+  .legend{font-size:11px;color:var(--dim);margin-top:6px;display:flex;gap:12px;flex-wrap:wrap}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+  code{background:var(--panel2);padding:1px 5px;border-radius:4px;color:#ffa657;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>PCAForge · 主成分分析锻造炉</h1>
+  <div class="sub">手写中心化 + 协方差 + 雅可比特征分解；幂迭代主成分与解析特征分解交叉验证 · 单文件零依赖</div>
+</header>
+
+<div class="wrap">
+  <div class="card col">
+    <h2>数据集 & 投影</h2>
+    <div class="row">
+      <label>数据集</label>
+      <select id="ds">
+        <option value="gauss">各向异性高斯团（主轴可验证）</option>
+        <option value="moon">双月牙</option>
+        <option value="spiral">螺旋</option>
+        <option value="roll">瑞士卷 (3D→2D)</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>样本数</label>
+      <input type="range" id="n" min="80" max="600" value="300" step="20"><span class="kv" id="nv">300</span>
+    </div>
+    <div class="row">
+      <label>投影维 k</label>
+      <input type="range" id="k" min="1" max="3" value="2" step="1"><span class="kv" id="kv">2</span>
+    </div>
+    <div class="row">
+      <button id="regenBtn">重生成</button>
+      <button class="ghost" id="verifyBtn">运行 8 项自检</button>
+    </div>
+    <canvas id="cv" height="340"></canvas>
+    <div class="legend">
+      <span><span class="dot" style="background:#58a6ff"></span>原始点</span>
+      <span><span class="dot" style="background:#3fb950"></span>投影点 (k 维重建)</span>
+      <span><span class="dot" style="background:#f85149"></span>PC1 / PC2 方向</span>
+    </div>
+    <div id="info" class="stat">状态：待命</div>
+  </div>
+
+  <div class="card col">
+    <h2>方差解释率 & 特征值</h2>
+    <div id="bars" class="bars"></div>
+    <h2 style="margin-top:14px">主成分负载 (loadings)</h2>
+    <div id="load" class="stat" style="white-space:pre-wrap;font-family:ui-monospace,monospace"></div>
+    <h2 style="margin-top:14px">8 项不变量自检</h2>
+    <div id="tests"></div>
+  </div>
+</div>
+
+<script id="engine">
+const PCA = (function(){
+  function mulberry32(a){
+    return function(){
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function randMat(r, c, seed){ const rnd = mulberry32(seed); const M = []; for(let i=0;i<r;i++){ const row=[]; for(let j=0;j<c;j++) row.push(rnd()*2-1); M.push(row);} return M; }
+  function randn(rnd){ // Box-Muller
+    let u=0,v=0; while(u===0)u=rnd(); while(v===0)v=rnd();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+  }
+  // ---- linear algebra ----
+  function matMul(A,B){
+    const n=A.length, m=B.length, p=B[0].length;
+    const C=new Array(n);
+    for(let i=0;i<n;i++){
+      const row=new Array(p).fill(0);
+      for(let k=0;k<m;k++){ const a=A[i][k]; if(a===0) continue; const Bk=B[k]; for(let j=0;j<p;j++) row[j]+=a*Bk[j]; }
+      C[i]=row;
+    }
+    return C;
+  }
+  function transpose(A){ const n=A.length, m=A[0].length; const T=new Array(m); for(let j=0;j<m;j++){ const col=new Array(n); for(let i=0;i<n;i++) col[i]=A[i][j]; T[j]=col; } return T; }
+  function matVec(A,v){ return A.map(row=>{ let s=0; for(let j=0;j<v.length;j++) s+=row[j]*v[j]; return s; }); }
+  function dot(a,b){ let s=0; for(let i=0;i<a.length;i++) s+=a[i]*b[i]; return s; }
+  function norm(v){ return Math.sqrt(dot(v,v)); }
+  function colVec(M,j){ return M.map(r=>r[j]); }
+  function setCol(M,v,j){ for(let i=0;i<M.length;i++) M[i][j]=v[i]; }
+
+  // center columns
+  function center(X){
+    const n=X.length, d=X[0].length;
+    const mu=new Array(d).fill(0);
+    for(let i=0;i<n;i++) for(let j=0;j<d;j++) mu[j]+=X[i][j];
+    for(let j=0;j<d;j++) mu[j]/=n;
+    const C=X.map(r=>{ const rr=new Array(d); for(let j=0;j<d;j++) rr[j]=r[j]-mu[j]; return rr; });
+    return {C, mu};
+  }
+  // covariance of centered matrix: (1/(n-1)) C^T C
+  function covariance(C){
+    const XcT=transpose(C);
+    const S=matMul(XcT, C);
+    const f=1/(C.length-1);
+    return S.map(r=>r.map(v=>v*f));
+  }
+
+  // ---- Jacobi eigenvalue decomposition (symmetric) ----
+  function jacobiEig(M, maxSweeps){
+    maxSweeps = maxSweeps || 100;
+    const n=M.length;
+    const A=M.map(r=>r.slice());
+    const V=[]; for(let i=0;i<n;i++){ const r=new Array(n).fill(0); r[i]=1; V.push(r); }
+    for(let sweep=0; sweep<maxSweeps; sweep++){
+      let off=0;
+      for(let p=0;p<n;p++) for(let q=p+1;q<n;q++) off+=A[p][q]*A[p][q];
+      if(off<1e-18) break;
+      for(let p=0;p<n;p++){
+        for(let q=p+1;q<n;q++){
+          if(Math.abs(A[p][q])<1e-300) continue;
+          const app=A[p][p], aqq=A[q][q], apq=A[p][q];
+          const phi=0.5*Math.atan2(2*apq, aqq-app);
+          const c=Math.cos(phi), s=Math.sin(phi);
+          for(let i=0;i<n;i++){
+            const ai=A[i][p], bi=A[i][q];
+            A[i][p]=c*ai - s*bi;
+            A[i][q]=s*ai + c*bi;
+          }
+          for(let i=0;i<n;i++){
+            const ai=A[p][i], bi=A[q][i];
+            A[p][i]=c*ai - s*bi;
+            A[q][i]=s*ai + c*bi;
+          }
+          for(let i=0;i<n;i++){
+            const vi=V[i][p], wi=V[i][q];
+            V[i][p]=c*vi - s*wi;
+            V[i][q]=s*vi + c*wi;
+          }
+        }
+      }
+    }
+    const values=[]; for(let i=0;i<n;i++) values.push(A[i][i]);
+    // eigenvectors = COLUMNS of V (V is orthogonal: columns are unit & mutually orthogonal)
+    const vecs=[];
+    for(let j=0;j<n;j++){ const col=new Array(n); for(let i=0;i<n;i++) col[i]=V[i][j]; vecs.push(col); }
+    return {values, vectors:vecs};
+  }
+
+  // ---- power iteration with deflation (Hotelling) ----
+  function powerIter(M, seed, iters){
+    iters = iters || 2000;
+    const n=M.length;
+    const rnd=mulberry32(seed);
+    let v=new Array(n);
+    for(let i=0;i<n;i++) v[i]=rnd()*2-1;
+    let nv=norm(v); v=v.map(x=>x/nv);
+    for(let it=0;it<iters;it++){
+      const w=matVec(M, v);
+      nv=norm(w);
+      if(nv<1e-14) break;
+      v=w.map(x=>x/nv);
+    }
+    return v;
+  }
+  function deflateEig(M, k, iters){
+    const n=M.length;
+    const Mk=M.map(r=>r.slice());
+    const vecs=[]; const vals=[];
+    for(let j=0;j<k;j++){
+      const v=powerIter(Mk, 1000+j*7, iters);
+      let lam=dot(v, matVec(Mk, v));
+      vecs.push(v); vals.push(lam);
+      // M <- M - lam v v^T
+      for(let a=0;a<n;a++){ for(let b=0;b<n;b++){ Mk[a][b]-=lam*v[a]*v[b]; } }
+    }
+    return {vectors:vecs, values:vals};
+  }
+
+  // sort ascending helper
+  function sortDesc(values, vectorsCols){
+    const idx=values.map((v,i)=>i);
+    idx.sort((a,b)=>values[b]-values[a]);
+    return {values:idx.map(i=>values[i]), vectors:idx.map(i=>vectorsCols[i])};
+  }
+
+  // ---- PCA ----
+  function pca(X, k){
+    const {C, mu}=center(X);
+    const S=covariance(C);
+    const jac=jacobiEig(S, 200);
+    const sorted=sortDesc(jac.values, jac.vectors);
+    const d=S.length;
+    k = k || d;
+    const loadings=[]; for(let j=0;j<k;j++) loadings.push(sorted.vectors[j]);
+    // W is d x k (columns = loadings)
+    const W=new Array(d);
+    for(let i=0;i<d;i++){ const col=new Array(k); for(let j=0;j<k;j++) col[j]=loadings[j][i]; W[i]=col; }
+    const totalVar=sorted.values.reduce((a,b)=>a+b,0);
+    const explained=sorted.values.map(v=> v/totalVar);
+    return {mu, W, loadings, values:sorted.values, explained, k, d, totalVar};
+  }
+  function project(X, p){
+    const {C}=center(X);
+    return matMul(C, p.W); // (n x d)(d x k) = n x k
+  }
+  function reconstruct(Xp, p){
+    const Xhat=matMul(Xp, transpose(p.W)); // (n x k)(k x d)
+    // add mu
+    return Xhat.map(r=>{ const rr=new Array(p.d); for(let j=0;j<p.d;j++) rr[j]=r[j]+p.mu[j]; return rr; });
+  }
+  // reconstruction error (Frobenius) truncated to k dims; also total variance
+  function reconStats(X, p){
+    const k=p.k;
+    const Xp=project(X, p);
+    const Xhat=reconstruct(Xp, p);
+    const n=X.length, d=X[0].length;
+    let err=0;
+    for(let i=0;i<n;i++) for(let j=0;j<d;j++) err+=(X[i][j]-Xhat[i][j])**2;
+    // total variance = sum ||x_i - mu||^2
+    const mu=p.mu; let tv=0;
+    for(let i=0;i<n;i++) for(let j=0;j<d;j++) tv+=(X[i][j]-mu[j])**2;
+    return {err, totalVar:tv, ratio:k<=p.values.length? p.explained.slice(0,k).reduce((a,b)=>a+b,0):1};
+  }
+
+  // ---- datasets ----
+  function makeGauss(n, seed){
+    const rnd=mulberry32(seed);
+    const X=[];
+    for(let i=0;i<n;i++){
+      const x0=randn(rnd)*3.0;      // stretched axis 0
+      const x1=randn(rnd)*0.6;
+      const x2=randn(rnd)*0.6;
+      X.push([x0, x1, x2]);
+    }
+    return X;
+  }
+  function makeMoon(n, seed){
+    const rnd=mulberry32(seed);
+    const X=[]; const r=1.0, noise=0.12;
+    for(let i=0;i<n;i++){
+      const t=Math.PI*rnd();
+      const up=i%2===0;
+      let x=r*Math.cos(t), y=r*Math.sin(t);
+      if(up){ y=y+0.5; } else { x=-x+ r*0.0; y=-y-0.5; x=x+r; }
+      X.push([x+randn(rnd)*noise, y+randn(rnd)*noise]);
+    }
+    return X;
+  }
+  function makeSpiral(n, seed){
+    const rnd=mulberry32(seed);
+    const X=[];
+    for(let i=0;i<n;i++){
+      const t=(i/n)*4*Math.PI;
+      const r=t/(4*Math.PI);
+      const cls=i%2;
+      const ang=t+cls*Math.PI;
+      X.push([r*Math.cos(ang)+randn(rnd)*0.08, r*Math.sin(ang)+randn(rnd)*0.08]);
+    }
+    return X;
+  }
+  function makeRoll(n, seed){
+    const rnd=mulberry32(seed);
+    const X=[];
+    for(let i=0;i<n;i++){
+      const t=rnd()*Math.PI*1.5;
+      const h=rnd()*2-1;
+      const x=t*Math.cos(t), y=t*Math.sin(t), z=h*2.0;
+      X.push([x+randn(rnd)*0.04, y+randn(rnd)*0.04, z+randn(rnd)*0.04]);
+    }
+    return X;
+  }
+  function randomOrthogonal(d, seed){
+    const rnd=mulberry32(seed);
+    const A=[];
+    for(let i=0;i<d;i++){ const r=new Array(d); for(let j=0;j<d;j++) r[j]=rnd()*2-1; A.push(r); }
+    // Gram-Schmidt
+    const Q=[];
+    for(let i=0;i<d;i++){
+      let v=A[i].slice();
+      for(let j=0;j<Q.length;j++){
+        const q=Q[j]; const proj=dot(v,q);
+        for(let k=0;k<d;k++) v[k]-=proj*q[k];
+      }
+      const nv=norm(v);
+      Q.push(v.map(x=>x/nv));
+    }
+    return Q; // rows orthonormal
+  }
+
+  return {
+    mulberry32, randMat, matMul, transpose, matVec, dot, norm, colVec, setCol,
+    center, covariance, jacobiEig, powerIter, deflateEig, sortDesc,
+    pca, project, reconstruct, reconStats,
+    makeGauss, makeMoon, makeSpiral, makeRoll, randomOrthogonal
+  };
+})();
+</script>
+
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+const engine = PCA;
+let DATA = null, PCAOBJ = null, K = 2;
+
+function build(){
+  const ds = $('ds').value;
+  const n = parseInt($('n').value, 10);
+  const seed = 2026;
+  if(ds==='gauss') DATA = engine.makeGauss(n, seed);
+  else if(ds==='moon') DATA = engine.makeMoon(n, seed);
+  else if(ds==='spiral') DATA = engine.makeSpiral(n, seed);
+  else DATA = engine.makeRoll(n, seed);
+  K = parseInt($('k').value, 10);
+  const d = DATA[0].length;
+  if(K > d) K = d;
+  PCAOBJ = engine.pca(DATA, K);
+  draw();
+  drawInfo();
+  runTests();
+}
+
+function draw(){
+  const W = cv.clientWidth || 360, H = 340;
+  cv.width = W; cv.height = H;
+  ctx.clearRect(0,0,W,H);
+  const d = DATA[0].length;
+  // project to 2D for display
+  const xs = DATA.map(p=>p[0]), ys = DATA.map(p=>p[1]);
+  const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+  const sx = v => (v-minX)/((maxX-minX)||1)*(W-40)+20;
+  const sy = v => H-20-(v-minY)/((maxY-minY)||1)*(H-40);
+  // projection points
+  const Xp = engine.project(DATA, PCAOBJ);
+  const Xhat = engine.reconstruct(Xp, PCAOBJ);
+  // draw original
+  for(let i=0;i<DATA.length;i++){
+    ctx.fillStyle='rgba(88,166,255,0.55)';
+    ctx.beginPath(); ctx.arc(sx(xs[i]), sy(ys[i]), 2.2, 0, 7); ctx.fill();
+  }
+  // draw reconstructed (projected) in green, only where d>=2 for view
+  for(let i=0;i<DATA.length;i++){
+    ctx.fillStyle='rgba(63,185,80,0.7)';
+    ctx.beginPath(); ctx.arc(sx(Xhat[i][0]), sy(Xhat[i][1]), 2.0, 0, 7); ctx.fill();
+  }
+  // PC1 / PC2 direction arrows (loadings) centered at data centroid (mu)
+  const mu=PCAOBJ.mu;
+  const cx = sx(mu[0]), cy = sy(mu[1]);
+  function arrow(vec, color){
+    const dx = vec[0], dy = vec[1];
+    const len = 60;
+    const mag = Math.hypot(dx,dy)||1;
+    const ex = cx + dx/mag*len, ey = cy - dy/mag*len;
+    ctx.strokeStyle=color; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(ex,ey); ctx.stroke();
+    ctx.beginPath(); ctx.arc(ex,ey,3,0,7); ctx.fillStyle=color; ctx.fill();
+  }
+  if(PCAOBJ.loadings.length>=1) arrow(PCAOBJ.loadings[0], '#f85149');
+  if(PCAOBJ.loadings.length>=2) arrow(PCAOBJ.loadings[1], '#d29922');
+}
+
+function drawInfo(){
+  const st = engine.reconStats(DATA, PCAOBJ);
+  $('info').textContent = `状态：维度 ${PCAOBJ.d} → 投影 ${K} · 累计解释率 ${(st.ratio*100).toFixed(1)}% · 重建误差 ${st.err.toFixed(3)} / 总方差 ${st.totalVar.toFixed(3)}`;
+  // bars
+  const bars = $('bars'); bars.innerHTML='';
+  PCAOBJ.explained.forEach((r,i)=>{
+    const div=document.createElement('div'); div.className='bar';
+    div.innerHTML=`<span>PC${i+1}</span><div class="track"><div class="fill" style="width:${(r*100).toFixed(1)}%"></div></div><span class="kv">${(r*100).toFixed(1)}%</span>`;
+    bars.appendChild(div);
+  });
+  // loadings text
+  let txt='';
+  PCAOBJ.loadings.forEach((v,i)=>{
+    txt += `PC${i+1}: [${v.map(x=>x.toFixed(2)).join(', ')}]  λ=${PCAOBJ.values[i].toFixed(3)}\n`;
+  });
+  $('load').textContent = txt;
+}
+
+// ---- in-browser verification, mirrors _smoke.js ----
+function maxDiff(a,b){ let m=0; for(let i=0;i<a.length;i++) for(let j=0;j<a[0].length;j++) m=Math.max(m,Math.abs(a[i][j]-b[i][j])); return m; }
+function maxAbsVec(a,b){ let m=0; for(let i=0;i<a.length;i++) m=Math.max(m,Math.abs(a[i]-b[i])); return m; }
+function T(name, ok, detail){
+  const div=document.createElement('div'); div.className='test';
+  div.innerHTML=`<span>${name}</span><span class="${ok?'ok':'no'}">${ok?'✅':'❌'} ${detail||''}</span>`;
+  $('tests').appendChild(div);
+}
+function runTests(){
+  $('tests').innerHTML='';
+  const E=engine;
+  // 1) covariance symmetric + semi-definite (eig >= -1e-9)
+  {
+    const X=E.makeGauss(120, 7);
+    const S=E.covariance(E.center(X).C);
+    let symErr=0, minEig=Infinity;
+    for(let i=0;i<S.length;i++) for(let j=0;j<S.length;j++) symErr=Math.max(symErr,Math.abs(S[i][j]-S[j][i]));
+    const jac=E.jacobiEig(S,200);
+    for(const v of jac.values) minEig=Math.min(minEig,v);
+    T('协方差矩阵对称 + 半正定(最小特征值 ≥ −1e-9)', symErr<1e-12 && minEig>=-1e-9, `对称差 ${symErr.toExponential(1)} 最小特征值 ${minEig.toFixed(4)}`);
+  }
+  // 2) eigenvectors orthonormal (V^T V = I)
+  {
+    const X=E.makeGauss(100, 5);
+    const S=E.covariance(E.center(X).C);
+    const jac=E.jacobiEig(S,200);
+    let off=0;
+    for(let i=0;i<jac.vectors.length;i++) for(let j=0;j<jac.vectors.length;j++){
+      let s=0; for(let k=0;k<jac.vectors.length;k++) s+=jac.vectors[k][i]*jac.vectors[k][j];
+      const want=i===j?1:0; off=Math.max(off,Math.abs(s-want));
+    }
+    T('特征向量正交归一 (VᵀV = I)', off<1e-12, `最大离对角差 ${off.toExponential(2)}`);
+  }
+  // 3) power iteration vs Jacobi cross-validation (principal axes align, |cos|>=0.999)
+  {
+    const X=E.makeGauss(200, 4);
+    const S=E.covariance(E.center(X).C);
+    const jac=E.jacobiEig(S,200);
+    const sorted=E.sortDesc(jac.values, jac.vectors);
+    const k=3;
+    const def=E.deflateEig(S, k, 3000);
+    let worst=0;
+    for(let j=0;j<k;j++){
+      let c=Math.abs(E.dot(def.vectors[j], sorted.vectors[j]))/(E.norm(def.vectors[j])*E.norm(sorted.vectors[j]));
+      worst=Math.max(worst, 1-c);
+    }
+    T('幂迭代主成分 == 雅可比解析特征分解 (|cos| ≥ 0.999)', worst<1e-3, `最大 1−|cos| ${worst.toExponential(2)}`);
+  }
+  // 4) projected covariance diagonalized
+  {
+    const X=E.makeMoon(160, 3);
+    const p=E.pca(X, 2);
+    const Xp=E.project(X, p);
+    const Sp=E.covariance(E.center(Xp).C);
+    let off=0; for(let i=0;i<Sp.length;i++) for(let j=0;j<Sp.length;j++) if(i!==j) off=Math.max(off,Math.abs(Sp[i][j]));
+    T('投影后协方差对角化 (非对角 ≈ 0)', off<1e-9, `最大非对角 ${off.toExponential(2)}`);
+  }
+  // 5) explained ratios sum to 1
+  {
+    const X=E.makeSpiral(180, 9);
+    const p=E.pca(X, 2);
+    const sum=p.explained.reduce((a,b)=>a+b,0);
+    T('方差解释率之和 = 1', Math.abs(sum-1)<1e-12, `Σ=${(sum*100).toFixed(4)}%`);
+  }
+  // 6) reconstruction error upper bound: err <= (1 - ratio_k) * totalVar
+  {
+    const X=E.makeRoll(200, 5);
+    const p=E.pca(X, 2);
+    const st=E.reconStats(X, p);
+    const bound=(1-st.ratio)*st.totalVar + 1e-9;
+    T('重建误差上界 ‖X−X̂‖² ≤ (1−累计解释率)·总方差', st.err<=bound, `err ${st.err.toFixed(2)} ≤ bound ${bound.toFixed(2)}`);
+  }
+  // 7) rotation equivariance: recon(QX) == Q·recon(X) (Frobenius)
+  {
+    const X=E.makeGauss(150, 4);
+    const Q=E.randomOrthogonal(4, 13);
+    const QX=X.map(r=>E.matVec(Q, r));
+    const p1=E.pca(X, 2), p2=E.pca(QX, 2);
+    const Xhat1=E.reconstruct(E.project(X,p1), p1);
+    const Xhat2=E.reconstruct(E.project(QX,p2), p2);
+    const QXhat1=Xhat1.map(r=>E.matVec(Q, r)); // Q · recon(X)
+    let d=0; for(let i=0;i<QXhat1.length;i++) for(let j=0;j<4;j++) d=Math.max(d,Math.abs(QXhat1[i][j]-Xhat2[i][j]));
+    T('旋转等变：重建(Q·X) == Q·重建(X)', d<1e-9, `最大差 ${d.toExponential(2)}`);
+  }
+  // 8) determinism: same seed -> same eigenvalues
+  {
+    const p1=E.pca(E.makeGauss(120, 21), 3);
+    const p2=E.pca(E.makeGauss(120, 21), 3);
+    let d=0; for(let i=0;i<3;i++) d=Math.max(d,Math.abs(p1.values[i]-p2.values[i]));
+    T('确定性：同种子同特征值', d<1e-12, `最大差 ${d.toExponential(2)}`);
+  }
+}
+
+$('n').addEventListener('input', ()=> $('nv').textContent=$('n').value);
+$('k').addEventListener('input', ()=> $('kv').textContent=$('k').value);
+$('regenBtn').addEventListener('click', build);
+$('verifyBtn').addEventListener('click', runTests);
+
+build();
+</script>
+</body>
+</html>

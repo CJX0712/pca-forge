@@ -1,0 +1,5 @@
+# build/log artifacts
+push.log
+pushcheck.txt
+_pushcheck.txt
+*.tmp
