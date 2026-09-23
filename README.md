@@ -1,5 +1,12 @@
 # PCAForge · 主成分分析锻造炉
 
+<p align="center">
+  <a href="https://github.com/CJX0712/pca-forge/actions/workflows/ci.yml"><img src="https://github.com/CJX0712/pca-forge/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/CJX0712/pca-forge/releases"><img src="https://img.shields.io/github/v/release/CJX0712/pca-forge?sort=semver" alt="release"></a>
+  <a href="https://github.com/CJX0712/pca-forge/blob/main/LICENSE"><img src="https://img.shields.io/github/license/CJX0712/pca-forge" alt="license"></a>
+  <img src="https://img.shields.io/badge/author-%E6%99%A8%E6%98%9F-1f6feb" alt="author">
+</p>
+
 纯 JavaScript 手写的主成分分析（PCA）教学/演示工具：零框架、零依赖、单文件 `index.html`，在浏览器里实时跑降维与可视化。
 
 ## 它做了什么
